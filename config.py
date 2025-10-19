@@ -21,9 +21,9 @@ INITIAL_CAPITAL = 100000  # Capital inicial
 # Parámetros de la estrategia
 CORRELATION_THRESHOLD = 0.7  # Umbral de correlación para selección de pares
 ADF_PVALUE_THRESHOLD = 0.05  # p-value para test de cointegración
-Z_SCORE_ENTRY = 2.0  # Entrar cuando z-score > 2
+Z_SCORE_ENTRY = 1.5  # Entrar cuando z-score > 2
 Z_SCORE_EXIT = 0.5  # Salir cuando z-score < 0.5
 
 # Parámetros del filtro de Kalman
 INITIAL_HEDGE_RATIO = 1.0
-DELTA = 0.0001  # Para inicialización del filtro
+DELTA = 0.00001  # Para inicialización del filtro
