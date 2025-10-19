@@ -29,7 +29,7 @@ class DataHandler:
         # Verificar y limpiar datos faltantes
         if self.data.isnull().any().any():
             print(f"Datos faltantes detectados: {self.data.isnull().sum().sum()} valores")
-            self.data = self.data.fillna(method='ffill')
+            self.data = self.data.ffill()
             
         print(f"Datos cargados: {len(self.data)} registros")
         print(f"Período: {self.data['fecha'].iloc[0]} a {self.data['fecha'].iloc[-1]}")

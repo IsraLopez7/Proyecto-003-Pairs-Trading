@@ -36,6 +36,7 @@ class Backtester:
         # Variables para tracking
         current_position = 0
         entry_date = None
+        entry_index = None
         
         # Iterar sobre cada día
         for i in range(len(ko_prices)):
@@ -46,10 +47,12 @@ class Backtester:
             if signal is not None:
                 # Cerrar posición existente si es necesario
                 if current_position != 0 and signal == 0:
-                    days_held = (dates[i] - entry_date).days if entry_date else 1
+                    # Calcular días mantenidos basándose en el índice
+                    days_held = i - entry_index if entry_index is not None else 1
                     self.strategy.close_position(ko_prices[i], pep_prices[i], dates[i], days_held)
                     current_position = 0
                     entry_date = None
+                    entry_index = None
                 
                 # Abrir nueva posición
                 elif current_position == 0 and signal != 0:
@@ -57,6 +60,7 @@ class Backtester:
                                                hedge_ratios[i], dates[i])
                     current_position = signal
                     entry_date = dates[i]
+                    entry_index = i
             
             # Actualizar valor del portfolio
             self.strategy.update_portfolio_value(ko_prices[i], pep_prices[i])
@@ -68,7 +72,7 @@ class Backtester:
         
         # Cerrar posición final si queda abierta
         if current_position != 0:
-            days_held = (dates[-1] - entry_date).days if entry_date else 1
+            days_held = len(ko_prices) - entry_index if entry_index is not None else 1
             self.strategy.close_position(ko_prices[-1], pep_prices[-1], dates[-1], days_held)
         
         # Guardar resultados
