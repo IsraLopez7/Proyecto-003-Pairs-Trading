@@ -3,6 +3,8 @@ Proyecto #3 de trading
 
 Implementación de una estrategia de arbitraje estadístico (pairs trading) utilizando las acciones de Coca-Cola (KO) y PepsiCo (PEP). La estrategia emplea filtros de Kalman para estimar dinámicamente el ratio de cobertura y generar señales de trading basadas en reversión a la media.
 
+Un filtro de Kalman es un algoritmo recursivo que proporciona estimaciones óptimas del estado de un sistema dinámico. El algoritmo está diseñado para estimar los estados no observados (p. ej., posición, velocidad) de un sistema a lo largo del tiempo combinando predicciones previas con observaciones entrantes con ruido.
+
 ### Estructura del Proyecto
 pairs_trading/
 │
