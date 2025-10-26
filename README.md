@@ -5,18 +5,56 @@ Implementación de una estrategia de arbitraje estadístico (pairs trading) util
 
 Un filtro de Kalman es un algoritmo recursivo que proporciona estimaciones óptimas del estado de un sistema dinámico. El algoritmo está diseñado para estimar los estados no observados (p. ej., posición, velocidad) de un sistema a lo largo del tiempo combinando predicciones previas con observaciones entrantes con ruido.
 
+# Recomendado: Python 3.12 (vale 3.10–3.12)
+python -m venv .venv
+# Windows:
+.venv\Scripts\activate
+# macOS/Linux:
+source .venv/bin/activate
+
+pip install -r requirements.txt
+python main.py
+
+Objetivo: de un universo de 50 tickers descargados con yfinance (≈15 años diarios), elegir 25 pares candidatos por correlación histórica, confirmar cointegración con Engle–Granger, escoger el mejor par, estimar α,β con Kalman y backtestear una estrategia de mean-reversion con costos reales.
+
+Descarga 50 → Limpia datos
+      │
+      ├─ Rolling Corr (60d) + filtro económico opcional
+      │     └→ TOP 25 pares
+      │
+      ├─ Engle–Granger por par:
+      │     OLS: P_A = β0 + β1 P_B + ε
+      │     ADF(ε) < 0.05 y half-life razonable
+      │     └→ ranking (score)
+      │
+      ├─ Elegir mejor par (o TOP-K)
+      │
+      ├─ Split temporal: 60% TRAIN / 20% TEST / 20% VALID
+      │
+      ├─ TRAIN:
+      │     OLS + ADF(ε) + half-life
+      │     Kalman(α,β) → Z-score
+      │     Umbrales base (o aprendidos)
+      │
+      ├─ TEST:
+      │     Grid de (entry/exit/confirm/stop)
+      │     Backtest con costos → mejor cfg
+      │
+      └─ VALID:
+            Backtest final + métricas + gráficas
+
+
 ### Estructura del Proyecto
-pairs_trading/
-│
-├── config.py              # Configuración y parámetros
-├── data_handler.py        # Manejo y preprocesamiento de datos
-├── cointegration.py       # Análisis de cointegración
-├── kalman_filter.py       # Implementación del filtro de Kalman
-├── trading_strategy.py    # Lógica de trading
-├── backtesting.py         # Motor de backtesting
-├── main.py               # Archivo principal
-├── requirements.txt       # Dependencias
-└── pares_KO_PEP_diario_2010_2025.csv  # Datos históricos
+backtesting.py        # Motor de backtest, señales, costos, métricas y plots
+cointegration.py      # Engle–Granger (OLS, ADF residual) + half-life OU
+config.py             # Parámetros globales (universo, umbrales, costos, Kalman…)
+kalman_filter.py      # Filtro de Kalman α–β (estado [alpha, beta])
+main.py               # Orquestación del pipeline completo
+pair_selection.py     # Descarga, rolling corr, filtros y ranking de pares
+utils.py              # Splits, ADF simple, utilidades numéricas
+requirements.txt      # Dependencias
+README.md             # Este documento
+
 
 El programa realizará automáticamente:
 
@@ -62,3 +100,4 @@ Archivos de Salida
 
 pairs_trading_results.png: Gráficos principales
 returns_distribution.png: Distribución de retornos
+Trading_signals.png: Señales de los trades
