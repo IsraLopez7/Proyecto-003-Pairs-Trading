@@ -1,117 +1,151 @@
 """
-Archivo principal para ejecutar la estrategia de Pairs Trading
-con KO y PEP usando Filtros de Kalman
+Main – Universo 50 → 25 pares → EG → mejor par → Kalman + señales → Backtest → Métricas
 """
 
 import warnings
 warnings.filterwarnings('ignore')
 
-from data_handler import DataHandler
-from cointegration import CointegrationAnalysis
-from backtesting import Backtester
+import numpy as np
+import pandas as pd
+import yfinance as yf
+
 from config import *
+from pair_selection import rank_pairs
+from cointegration import CointegrationAnalysis
+from kalman_filter import KalmanFilter
+from backtesting import Backtester
+
+def chronological_split(df: pd.DataFrame, train_ratio=0.6, test_ratio=0.2):
+    n = len(df)
+    i1 = int(n*train_ratio)
+    i2 = int(n*(train_ratio+test_ratio))
+    train = df.iloc[:i1].copy()
+    test  = df.iloc[i1:i2].copy()
+    val   = df.iloc[i2:].copy()
+    return train, test, val
+
+def thresholds_from_train(z_abs: np.ndarray):
+    if USE_TRAINED_THRESHOLDS:
+        e = np.clip(np.percentile(z_abs, TRAIN_QUANT_ENTRY*100),   1.6, 2.5)
+        x = np.clip(np.percentile(z_abs, TRAIN_QUANT_EXIT*100),    0.25, 0.8)
+        c = min(max(CONFIRM_MIN, e - TRAIN_QUANT_CONFIRM*0.25), e)
+    else:
+        e, x = Z_SCORE_ENTRY, Z_SCORE_EXIT
+        c = max(CONFIRM_MIN, min(e - CONFIRM_GAP, e))
+    return float(e), float(x), float(c)
 
 def main():
-    print("="*60)
-    print("PAIRS TRADING: KO-PEP CON FILTROS DE KALMAN")
-    print("="*60)
+    print("="*70)
+    print("UNIVERSO 50 → 25 PARES → MEJOR PAR → KALMAN + BACKTEST")
+    print("="*70)
+
+    # 1) Ranking de pares
+    print("\n1) Descargando universo y rankeando pares...")
+    prices, ranking = rank_pairs()
     
-    # 1. CARGAR Y PREPARAR DATOS
-    print("\n1. CARGANDO DATOS...")
-    print("-"*40)
-    data_handler = DataHandler()
-    data = data_handler.load_data()
+    # MODIFICACIÓN: Verificar que el mejor par tenga buena cointegración
+    valid_pairs = ranking[ranking['adf_resid_p'] < 0.10]  # Solo pares con p < 0.10
     
-    # 2. DIVIDIR DATOS
-    print("\n2. DIVISIÓN DE DATOS...")
-    print("-"*40)
-    train_data, test_data, val_data = data_handler.split_data()
-    
-    # 3. ANÁLISIS DE COINTEGRACIÓN (en datos de entrenamiento)
-    print("\n3. ANÁLISIS DE COINTEGRACIÓN...")
-    print("-"*40)
-    coint_analysis = CointegrationAnalysis()
-    
-    # Obtener precios de entrenamiento
-    ko_train, pep_train = data_handler.get_prices(train_data)
-    
-    # Calcular correlación
-    correlation = coint_analysis.calculate_correlation(ko_train, pep_train)
-    
-    # Ejecutar regresión OLS
-    beta_0, beta_1, residuals = coint_analysis.run_ols_regression(ko_train, pep_train)
-    
-    # Test de estacionariedad
-    is_cointegrated, p_value = coint_analysis.test_stationarity(residuals)
-    
-    # Calcular half-life
-    half_life = coint_analysis.calculate_half_life(residuals)
-    
-    # 4. BACKTEST EN DATOS DE PRUEBA
-    print("\n4. EJECUTANDO BACKTEST EN DATOS DE PRUEBA...")
-    print("-"*40)
-    
-    ko_test, pep_test = data_handler.get_prices(test_data)
-    dates_test = test_data['fecha'].values
-    
-    backtester_test = Backtester(test_data)
-    results_test = backtester_test.run_backtest(ko_test, pep_test, dates_test)
-    
-    # Calcular estadísticas
-    stats_test = backtester_test.strategy.calculate_statistics()
-    if stats_test:
-        print("\nResultados en Datos de Prueba:")
-        backtester_test.print_statistics(stats_test)
-    
-    # 5. VALIDACIÓN FINAL
-    print("\n5. VALIDACIÓN FINAL...")
-    print("-"*40)
-    
-    ko_val, pep_val = data_handler.get_prices(val_data)
-    dates_val = val_data['fecha'].values
-    
-    backtester_val = Backtester(val_data)
-    results_val = backtester_val.run_backtest(ko_val, pep_val, dates_val)
-    
-    # Calcular estadísticas
-    stats_val = backtester_val.strategy.calculate_statistics()
-    if stats_val:
-        print("\nResultados en Datos de Validación:")
-        backtester_val.print_statistics(stats_val)
-    
-    # 6. GENERAR GRÁFICOS
-    print("\n6. GENERANDO VISUALIZACIONES...")
-    print("-"*40)
-    
-    # Gráficos para el conjunto de validación
-    print("Generando gráficos de resultados...")
-    backtester_val.plot_results(save_plots=True)
-    
-    print("Generando distribución de retornos...")
-    backtester_val.plot_returns_distribution(save_plot=True)
-    
-    # 7. RESUMEN FINAL
-    print("\n" + "="*60)
-    print("RESUMEN DE RESULTADOS")
-    print("="*60)
-    
-    if is_cointegrated:
-        print("✓ Los pares KO-PEP están COINTEGRADOS")
+    if len(valid_pairs) == 0:
+        print("⚠️ No hay pares bien cointegrados. Forzando KO-PEP...")
+        # Forzar KO-PEP
+        ko = yf.download('KO', start='2010-01-01', progress=False)['Close']
+        pep = yf.download('PEP', start='2010-01-01', progress=False)['Close']
+        prices = pd.DataFrame({'KO': ko, 'PEP': pep}).dropna()
+        A, B = 'KO', 'PEP'
     else:
-        print("✗ Los pares KO-PEP NO están cointegrados")
+        best = valid_pairs.iloc[0]
+        A, B = best["A"], best["B"]
+        
+    print(f"\nMejor par seleccionado: {A}-{B}")
     
-    print(f"Correlación histórica: {correlation:.4f}")
-    print(f"Half-life de reversión: {half_life:.1f} días")
-    
-    if stats_test and stats_val:
-        print("\nComparación de Performance:")
-        print(f"  Prueba - Retorno Total: {stats_test['total_return']*100:.2f}%")
-        print(f"  Validación - Retorno Total: {stats_val['total_return']*100:.2f}%")
-        print(f"  Prueba - Sharpe Ratio: {stats_test['sharpe_ratio']:.2f}")
-        print(f"  Validación - Sharpe Ratio: {stats_val['sharpe_ratio']:.2f}")
-    
-    print("\nEjecución completada exitosamente.")
-    print("="*60)
+    # Resto del código igual pero con umbrales más agresivos
+    # Modificar el grid search:
+    grids_E = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]  # Más agresivo
+    grids_X = [0.05, 0.10, 0.15, 0.20]  # Salidas más rápidas
+
+    px = prices[[A,B]].dropna()
+    train_df, test_df, val_df = chronological_split(px, TRAIN_RATIO, TEST_RATIO)
+    print("\nTamaños:", len(train_df), len(test_df), len(val_df))
+
+    # 3) EG/Kalman en TRAIN
+    co = CointegrationAnalysis()
+    beta0, beta1, resid = co.run_ols_regression(train_df[A].values, train_df[B].values)
+    coint, pval = co.test_stationarity(resid)
+    hl = co.calculate_half_life(resid)
+
+    print("\nDiagnóstico TRAIN:")
+    print(f"  OLS: P_{A} = {beta0:.4f} + {beta1:.4f}·P_{B} + ε")
+    print(f"  ADF resid p = {pval:.4f}  |  Half-life = {hl:.1f} días")
+
+    kf = KalmanFilter()
+    _, z_train, _, _ = kf.run_filter(train_df[A].values, train_df[B].values, residuals_train=resid)
+    z_abs = np.abs(z_train[np.isfinite(z_train)])
+    entry0, exit0, confirm0 = thresholds_from_train(z_abs)
+    print(f"\nUmbrales base: entry={entry0:.2f}  exit={exit0:.2f}  confirm={confirm0:.2f}")
+
+    # 4) Backtest en TEST (pequeño grid robusto)
+    grids_E = [0.8, 1.0, 1.2, 1.4]  # Más opciones
+    grids_X = [0.15, 0.25, 0.35, 0.45]  # Más opciones
+    cfgs = []
+    for E in grids_E:
+        for X in grids_X:
+            C = max(CONFIRM_MIN, min(E - CONFIRM_GAP, E))
+            cfgs.append({"E":float(E),"X":float(X),"C":float(C),"S":STOP_LOSS_Z})
+
+    A_t, B_t = test_df[A].values, test_df[B].values
+    dates_t = test_df.index.values
+    best_cfg, best_score = None, -1e9
+
+    print("\n4) Grid en TEST:")
+    for cfg in cfgs:
+        bt = Backtester(test_df.copy())
+        res = bt.run_backtest(
+            A_t, B_t, dates_t,
+            residuals_train=resid,
+            half_life_days=hl,
+            entry_thr=cfg["E"], exit_thr=cfg["X"], confirm_thr=cfg["C"],
+            stop_loss_thr=cfg["S"],
+            min_hold_days=MIN_HOLD_DAYS, cooldown_days=ENTRY_COOLDOWN_DAYS
+        )
+        st = res.get("daily_stats", {}) if res else {}
+        ret   = float(st.get("total_return", 0.0) or 0.0)
+        mdd   = float(st.get("max_drawdown", 1.0) or 1.0)
+        sharpe= float(st.get("sharpe", -999) or -999)
+        score = (ret*100) - (mdd*20) + (max(-10, sharpe)*5)
+        print(f"  cfg {cfg} → Ret {ret*100:.2f}% | Sharpe {sharpe:.2f} | MDD {mdd*100:.2f}%")
+        if score > best_score:
+            best_score, best_cfg = score, cfg
+
+    if best_cfg is None:
+        best_cfg = {"E":entry0,"X":exit0,"C":confirm0,"S":STOP_LOSS_Z}
+
+    print(f"\nMejor cfg TEST → E={best_cfg['E']:.2f}  X={best_cfg['X']:.2f}  C={best_cfg['C']:.2f}")
+
+    # 5) Validación final
+    print("\n5) Validación final...")
+    A_v, B_v = val_df[A].values, val_df[B].values
+    dates_v = val_df.index.values
+    bt_v = Backtester(val_df.copy())
+    res_v = bt_v.run_backtest(
+        A_v, B_v, dates_v,
+        residuals_train=resid,
+        half_life_days=hl,
+        entry_thr=best_cfg["E"], exit_thr=best_cfg["X"], confirm_thr=best_cfg["C"],
+        stop_loss_thr=best_cfg["S"],
+        min_hold_days=MIN_HOLD_DAYS, cooldown_days=ENTRY_COOLDOWN_DAYS
+    )
+    bt_v.print_statistics()
+
+    # 6) GRÁFICOS
+    print("\n6) Gráficos")
+    bt_v.plot_results(save_plots=SAVE_PLOTS)
+    bt_v.plot_signals_and_trades(save_plot=SAVE_PLOTS)  # NUEVO
+    bt_v.plot_returns_distribution(save_plot=SAVE_PLOTS)
+
+    print("\n" + "="*70)
+    print(f"Resumen: mejor par {A}-{B} | EG p={pval:.4f} | HL={hl:.1f} días")
+    print("="*70)
 
 if __name__ == "__main__":
     main()
