@@ -1,181 +1,157 @@
-"""
-Implementación del Filtro de Kalman como Proceso de Decisión Secuencial
-siguiendo el marco de Powell para Análisis de Decisión Secuencial
-"""
+# kalman_filter.py
+# ------------------------------------------------------------
+# Filtro de Kalman para alpha-beta dinámicos:
+#   y_t = alpha_t + beta_t * x_t + e_t
+#   [alpha_t, beta_t]' = [alpha_{t-1}, beta_{t-1}]' + w_t
+# donde w_t ~ N(0, Q), e_t ~ N(0, R_t)
+# ------------------------------------------------------------
 
+from __future__ import annotations
 import numpy as np
-from config import *
+
+from config import (
+    # Estado y seeds
+    KALMAN_STATE,
+    INITIAL_ALPHA,
+    INITIAL_HEDGE_RATIO,
+
+    # Q y R (alias en config.py)
+    KALMAN_DELTA,      # ~ intensidad para Q
+    KALMAN_R_EWMA,     # factor EWMA para R_t (0..1)
+    KALMAN_R_FLOOR,    # piso numérico de R
+    KALMAN_Q_MIN,      # límites de Q
+    KALMAN_Q_MAX,
+
+    # Otros
+    MAX_Z_CAP,
+)
 
 class KalmanFilter:
     """
-    Filtro de Kalman formulado como proceso de decisión secuencial
-    
-    Los 5 elementos del modelo matemático:
-    1. Estado (S_t): Ratio de cobertura dinámico β_t
-    2. Acción (x_t): Decisión de trading basada en Z-score
-    3. Información exógena (W_t): Nuevos precios observados
-    4. Función de transición: S_{t+1} = f(S_t, x_t, W_{t+1})
-    5. Función objetivo: Minimizar error de predicción
-    
-    Los 6 pasos del proceso de modelado:
-    1. Problema: Estimar ratio de cobertura dinámico para pairs trading
-    2. Modelo: Filtro de Kalman con ecuaciones de estado y observación
-    3. Política: Trading basado en Z-score con matrices Q y R
-    4. Implementación: Actualización secuencial del filtro
-    5. Incertidumbre: Modelada a través de matrices de covarianza
-    6. Evaluación: Backtesting con costos de transacción
+    Filtro de Kalman para estimar alpha_t y beta_t dinámicos entre dos series de precios.
+    Devuelve:
+      spreads   : innovación (y_t - y_pred_t) o residuo tras la actualización
+      z_scores  : innovación normalizada por sqrt(var_ewma)
+      betas     : trayectoria de beta_t (hedge ratio)
+      alphas    : trayectoria de alpha_t
     """
-    
-    def __init__(self, initial_hedge_ratio=INITIAL_HEDGE_RATIO, delta=DELTA):
-        """
-        Inicializa el filtro de Kalman
-        
-        Parámetros:
-        - initial_hedge_ratio: Estimación inicial del ratio de cobertura β
-        - delta: Factor de inicialización para la covarianza
-        """
-        # Estado inicial (ratio de cobertura)
-        self.beta = initial_hedge_ratio
-        self.beta_history = [self.beta]
-        
-        # Matrices del filtro
-        self.R = None  # Covarianza del ruido de observación (se estima)
-        self.Q = delta / (1 - delta) # Covarianza del ruido del proceso
-        self.P = 1  # Covarianza del error de estimación inicial
-        
-        # Historial para análisis
-        self.P_history = [self.P]
-        self.e_history = []  # Errores de predicción
-        self.Q_history = []  # Para seguimiento del z-score
-        
-    def initialize_R(self, residuals):
-        """
-        Inicializa R basándose en la varianza de los residuos históricos
-        """
-        self.R = np.var(residuals)
-        print(f"R (varianza del ruido de observación) inicializada: {self.R:.6f}")
-        
-    def predict(self):
-        """
-        Paso de predicción (Time Update)
-        Predice el siguiente estado y su covarianza
-        """
-        # En un random walk: β_t|t-1 = β_t-1|t-1
-        # La predicción del ratio de cobertura es el valor anterior
-        beta_pred = self.beta
-        
-        # Actualizar covarianza de predicción
-        # P_t|t-1 = P_t-1|t-1 + Q
-        P_pred = self.P + self.Q
-        
-        return beta_pred, P_pred
-    
-    def update(self, P1_t, P2_t):
-        """
-        Paso de actualización (Measurement Update)
-        Actualiza el estado basándose en nueva observación
-        
-        Parámetros:
-        - P1_t: Precio del activo 1 en tiempo t (KO)
-        - P2_t: Precio del activo 2 en tiempo t (PEP)
-        
-        Retorna:
-        - e_t: Error de predicción (innovación)
-        - Q_t: Z-score para decisión de trading
-        """
-        # Paso de predicción
-        beta_pred, P_pred = self.predict()
-        
-        # Error de predicción (innovación)
-        # e_t = P1_t - β_t|t-1 * P2_t
-        e_t = P1_t - beta_pred * P2_t
-        self.e_history.append(e_t)
-        
-        # Ganancia de Kalman
-        # K_t = P_t|t-1 * P2_t / (P2_t^2 * P_t|t-1 + R)
-        K = (P_pred * P2_t) / (P2_t**2 * P_pred + self.R)
-        
-        # Actualización del estado (ratio de cobertura)
-        # β_t|t = β_t|t-1 + K_t * e_t
-        self.beta = beta_pred + K * e_t
-        self.beta_history.append(self.beta)
-        
-        # Actualización de la covarianza
-        # P_t|t = (1 - K_t * P2_t) * P_t|t-1
-        self.P = (1 - K * P2_t) * P_pred
-        self.P_history.append(self.P)
-        
-        # Calcular Z-score para señal de trading
-        # Q_t = e_t / sqrt(R)
-        if self.R > 0:
-            Q_t = e_t / np.sqrt(self.R)
-        else:
-            Q_t = 0
-        self.Q_history.append(Q_t)
-        
-        return e_t, Q_t
-    
-    def get_trading_signal(self, Q_t):
-        """
-        Genera señal de trading basada en Z-score
-        
-        Política de trading:
-        - Si |Q_t| > Z_SCORE_ENTRY: Abrir posición
-        - Si |Q_t| < Z_SCORE_EXIT: Cerrar posición
-        
-        Retorna:
-        - 1: Long spread (comprar KO, vender PEP)
-        - -1: Short spread (vender KO, comprar PEP)
-        - 0: Neutral/cerrar posición
-        """
-        if abs(Q_t) > Z_SCORE_ENTRY:
-            return -np.sign(Q_t)  # Mean reversion
-        elif abs(Q_t) < Z_SCORE_EXIT:
-            return 0
-        else:
-            return None  # Mantener posición actual
-    
-    def run_filter(self, P1_prices, P2_prices):
-        """
-        Ejecuta el filtro de Kalman sobre toda la serie de precios
-        
-        Parámetros:
-        - P1_prices: Array de precios del activo 1 (KO)
-        - P2_prices: Array de precios del activo 2 (PEP)
-        
-        Retorna:
-        - spreads: Serie de spreads e_t
-        - z_scores: Serie de Z-scores Q_t
-        - hedge_ratios: Serie de ratios de cobertura β_t
-        """
-        spreads = []
-        z_scores = []
-        
-        # Inicializar R con una estimación inicial
-        initial_spread = P1_prices[:20] - self.beta * P2_prices[:20]
-        self.initialize_R(initial_spread)
-        
-        # Procesar cada observación secuencialmente
-        for t in range(len(P1_prices)):
-            e_t, Q_t = self.update(P1_prices[t], P2_prices[t])
-            spreads.append(e_t)
-            z_scores.append(Q_t)
-            
-            # Actualizar R adaptativamente (ventana móvil)
-            if t > 30:
-                recent_errors = self.e_history[-30:]
-                self.R = np.var(recent_errors)
-        
-        return np.array(spreads), np.array(z_scores), np.array(self.beta_history[1:])
-    
+
+    def __init__(self):
+        self.reset()
+
+    # ------------------------------------------------------------------ #
+    # API
+    # ------------------------------------------------------------------ #
     def reset(self):
-        """
-        Reinicia el filtro para nueva ejecución
-        """
-        self.beta = INITIAL_HEDGE_RATIO
-        self.beta_history = [self.beta]
-        self.P = 1
-        self.P_history = [self.P]
-        self.e_history = []
-        self.Q_history = []
+        self.alpha = float(INITIAL_ALPHA)
+        self.beta  = float(INITIAL_HEDGE_RATIO)
+        # Matriz de covarianza inicial (un poco grande pero acotada)
+        self.P = np.eye(2) * 1e3
+        # Varianza observacional EWMA (se inicializa en run_filter)
         self.R = None
+
+    def run_filter(self, y_prices, x_prices, residuals_train=None):
+        """
+        y_prices: serie de precios del activo 1 (y)
+        x_prices: serie de precios del activo 2 (x)
+        residuals_train: residuales de OLS (TRAIN) para seedear R
+
+        returns: spreads, z_scores, betas, alphas (np.ndarray)
+        """
+        y = np.asarray(y_prices, dtype=float)
+        x = np.asarray(x_prices, dtype=float)
+        n = len(y)
+        if len(x) != n:
+            raise ValueError("y_prices y x_prices deben tener la misma longitud.")
+
+        # Limpieza mínima
+        mask = ~(np.isfinite(y) & np.isfinite(x))
+        if mask.any():
+            # forward-fill simple
+            for arr in (y, x):
+                isn = ~np.isfinite(arr)
+                if isn.any():
+                    arr[isn] = np.interp(np.flatnonzero(isn), np.flatnonzero(~isn), arr[~isn])
+
+        # Semillas
+        if residuals_train is not None:
+            rseed = float(np.nanvar(np.asarray(residuals_train, dtype=float)))
+            if not np.isfinite(rseed) or rseed <= 0:
+                rseed = 1.0
+        else:
+            # var de la diferencia simple como aproximación
+            diffy = np.diff(y)
+            rseed = float(np.nanvar(diffy)) if diffy.size > 3 else 1.0
+            if not np.isfinite(rseed) or rseed <= 0:
+                rseed = 1.0
+
+        self.R = max(KALMAN_R_FLOOR, rseed)
+
+        # Q a partir de delta (forma estándar para random-walk)
+        # Q ≈ delta/(1-delta) * I, acotado en [Q_MIN, Q_MAX]
+        q_scalar = KALMAN_DELTA / max(1e-12, (1.0 - KALMAN_DELTA))
+        q_scalar = float(np.clip(q_scalar, KALMAN_Q_MIN, KALMAN_Q_MAX))
+        Q = np.eye(2) * q_scalar
+
+        # Inicialización del estado
+        theta = np.array([self.alpha, self.beta], dtype=float)  # [alpha, beta]
+        P = self.P.copy()
+
+        alphas = np.zeros(n, dtype=float)
+        betas  = np.zeros(n, dtype=float)
+        spreads = np.zeros(n, dtype=float)
+        z_scores = np.zeros(n, dtype=float)
+
+        # Varianza EWMA de la innovación para normalizar Z
+        var_ewma = self.R
+
+        for t in range(n):
+            xt = x[t]
+            yt = y[t]
+
+            # --- PREDICCIÓN DEL ESTADO (random walk) ---
+            theta_pred = theta               # F = I
+            P_pred = P + Q
+
+            # --- PREDICCIÓN DE LA OBSERVACIÓN ---
+            # H_t = [1, x_t]
+            H = np.array([1.0, float(xt)], dtype=float)
+
+            y_pred = H @ theta_pred
+            innov = float(yt - y_pred)       # innovación (residuo de predicción)
+
+            # --- ACTUALIZACIÓN ---
+            S = float(H @ P_pred @ H.T + self.R)   # var de la innovación
+            if S <= 0 or not np.isfinite(S):
+                # fallback numérico
+                S = float(max(1e-8, abs(self.R)))
+
+            K = (P_pred @ H.T) / S           # Ganancia de Kalman (2x1)
+            theta = theta_pred + K * innov   # estado posterior
+            P = P_pred - np.outer(K, H) @ P_pred
+
+            # Guardar trayectorias
+            alpha_t, beta_t = theta[0], theta[1]
+            alphas[t] = alpha_t
+            betas[t]  = beta_t
+
+            # Residuo tras actualización (equivalente a spread con alpha/beta actualizados)
+            spread_t = float(yt - (alpha_t + beta_t * xt))
+            spreads[t] = spread_t
+
+            # Actualizar R con EWMA sobre la innovación al cuadrado
+            self.R = max(KALMAN_R_FLOOR, (1.0 - KALMAN_R_EWMA) * self.R + KALMAN_R_EWMA * (innov * innov))
+            # EWMA para normalización de Z (puede ser la misma regla)
+            var_ewma = max(KALMAN_R_FLOOR, (1.0 - KALMAN_R_EWMA) * var_ewma + KALMAN_R_EWMA * (innov * innov))
+            std_ewma = float(np.sqrt(var_ewma))
+
+            z = spread_t / std_ewma if std_ewma > 0 else 0.0
+            # Cap en Z para evitar explosiones numéricas
+            z_scores[t] = float(np.clip(z, -MAX_Z_CAP, MAX_Z_CAP))
+
+        # Persistir último estado
+        self.alpha = float(theta[0])
+        self.beta  = float(theta[1])
+        self.P     = P
+
+        return spreads, z_scores, betas, alphas
