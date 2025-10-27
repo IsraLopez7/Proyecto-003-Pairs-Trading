@@ -1,5 +1,3 @@
-Requirements for the project:   
-
 # Núcleo científico
 numpy>=1.26
 pandas>=2.0
