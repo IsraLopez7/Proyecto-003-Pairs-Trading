@@ -142,6 +142,8 @@ def main():
     bt_v.plot_results(save_plots=SAVE_PLOTS)
     bt_v.plot_signals_and_trades(save_plot=SAVE_PLOTS)  # NUEVO
     bt_v.plot_returns_distribution(save_plot=SAVE_PLOTS)
+    bt_v.plot_spread_evolution(save_plot=SAVE_PLOTS)          # ← Spread evolution graph
+    bt_v.plot_trade_pnl_distribution(save_plot=SAVE_PLOTS)    # ← Trade P&L distribution
 
     print("\n" + "="*70)
     print(f"Resumen: mejor par {A}-{B} | EG p={pval:.4f} | HL={hl:.1f} días")

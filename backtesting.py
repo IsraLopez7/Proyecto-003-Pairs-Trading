@@ -169,6 +169,7 @@ class Backtester:
         spreads, z, betas, alphas = self._compute_kalman(y, x, residuals_train)
         idx = pd.to_datetime(dates)
         z_series = pd.Series(z, index=idx)
+        self.spread: Optional[pd.Series] = None
 
         # 2) Timers/umbrales
         # time-stop basado en half-life
@@ -291,6 +292,8 @@ class Backtester:
         self.alphas = pd.Series(alphas, index=idx)
         self.trades = trades
         self._last_params = dict(E=entry_thr, X=exit_thr, C=confirm_thr, S=stop_loss_thr)
+        self.spread = pd.Series(spreads, index=idx)
+
 
         return {
             "equity": equity,
@@ -390,6 +393,61 @@ class Backtester:
         ax2.boxplot(rets * 100.0, vert=True)
         ax2.set_title("Box plot de retornos diarios (%)")
 
+        plt.tight_layout()
+        if save_plot:
+            plt.savefig(fname, dpi=140)
+        plt.show()
+
+    def plot_spread_evolution(self, window: int = 60, bands: float = 2.0,
+                            save_plot: bool = SAVE_PLOTS,
+                            fname: str = "spread_evolution.png"):
+        if self.spread is None:
+            print("No hay spread para graficar. Ejecuta el backtest primero.")
+            return
+
+        s = self.spread.astype(float).dropna()
+        mu = s.rolling(window).mean()
+        sd = s.rolling(window).std()
+
+        plt.figure(figsize=(12, 5))
+        plt.plot(s.index, s.values, label="Spread", linewidth=1)
+        plt.plot(mu.index, mu.values, linestyle="--", label=f"Media ({window})")
+        plt.plot(mu.index, (mu + bands*sd).values, linestyle="--", alpha=0.7)
+        plt.plot(mu.index, (mu - bands*sd).values, linestyle="--", alpha=0.7)
+        plt.title("Evolución del Spread")
+        plt.legend()
+        plt.tight_layout()
+        if save_plot:
+            plt.savefig(fname, dpi=140)
+        plt.show()
+
+    def plot_trade_pnl_distribution(self, save_plot: bool = SAVE_PLOTS,
+                                    fname: str = "trade_pnl_distribution.png"):
+        if not self.trades:
+            print("No hay operaciones para graficar.")
+            return
+
+        # Retorno porcentual por trade sobre el notional de entrada (entry_A + entry_B)
+        pnl_pct = []
+        for t in self.trades:
+            if t.exit_i is None:
+                continue
+            # PnL por unidad: (ΔA) - side*(ΔB)
+            pnl_per_unit = (t.exit_A - t.entry_A) - t.side * (t.exit_B - t.entry_B)
+            denom = max(1e-12, (t.entry_A + t.entry_B))  # evitar división por 0
+            pnl_pct.append(100.0 * pnl_per_unit / denom)
+
+        if len(pnl_pct) == 0:
+            print("No hay trades cerrados para graficar.")
+            return
+
+        pnl_pct = np.array(pnl_pct, dtype=float)
+
+        plt.figure(figsize=(10, 5))
+        plt.hist(pnl_pct, bins=30)
+        plt.axvline(pnl_pct.mean(), linewidth=2, label=f"Media: {pnl_pct.mean():.2f}%")
+        plt.title("Distribución de retornos por trade (%)")
+        plt.legend()
         plt.tight_layout()
         if save_plot:
             plt.savefig(fname, dpi=140)
